@@ -11,12 +11,18 @@ from utils import visualize
 from utils import set_model_mode
 import params
 
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:  # graceful degradation if wandb not installed
+    _WANDB_AVAILABLE = False
+
 # Source : 0, Target :1
 source_test_loader = mnist.mnist_test_loader
 target_test_loader = mnistm.mnistm_test_loader
 
 
-def source_only(encoder, classifier, source_train_loader, target_train_loader):
+def source_only(encoder, classifier, source_train_loader, target_train_loader, wandb_run=None):
     print("Training with only the source dataset")
 
     classifier_criterion = nn.CrossEntropyLoss().cuda()
@@ -55,14 +61,29 @@ def source_only(encoder, classifier, source_train_loader, target_train_loader):
                 total_dataset = len(source_train_loader.dataset)
                 percentage_completed = 100. * batch_idx / len(source_train_loader)
                 print(f'[{total_processed}/{total_dataset} ({percentage_completed:.0f}%)]\tClassification Loss: {class_loss.item():.4f}')
+            if wandb_run is not None:
+                wandb_run.log({
+                    'phase': 'train',
+                    'mode': 'source_only',
+                    'epoch': epoch,
+                    'step': epoch * len(source_train_loader) + batch_idx,
+                    'loss/classification': class_loss.item(),
+                    'lr': optimizer.param_groups[0]['lr']
+                })
 
-        test.tester(encoder, classifier, None, source_test_loader, target_test_loader, training_mode='Source_only')
+        acc = test.tester(encoder, classifier, None, source_test_loader, target_test_loader, training_mode='Source_only')
+        if wandb_run is not None:
+            wandb_run.log({
+                'epoch': epoch,
+                'eval/source_accuracy': acc['Source']['accuracy'],
+                'eval/target_accuracy': acc['Target']['accuracy']
+            })
 
     save_model(encoder, classifier, None, 'Source-only')
     visualize(encoder, 'Source-only')
 
 
-def dann(encoder, classifier, discriminator, source_train_loader, target_train_loader):
+def dann(encoder, classifier, discriminator, source_train_loader, target_train_loader, wandb_run=None):
     print("Training with the DANN adaptation method")
 
     classifier_criterion = nn.CrossEntropyLoss().cuda()
@@ -121,8 +142,29 @@ def dann(encoder, classifier, discriminator, source_train_loader, target_train_l
             if (batch_idx + 1) % 100 == 0:
                 print('[{}/{} ({:.0f}%)]\tTotal Loss: {:.4f}\tClassification Loss: {:.4f}\tDomain Loss: {:.4f}'.format(
                     batch_idx * len(target_image), len(target_train_loader.dataset), 100. * batch_idx / len(target_train_loader), total_loss.item(), class_loss.item(), domain_loss.item()))
+            if wandb_run is not None:
+                wandb_run.log({
+                    'phase': 'train',
+                    'mode': 'dann',
+                    'epoch': epoch,
+                    'step': epoch * len(source_train_loader) + batch_idx,
+                    'loss/total': total_loss.item(),
+                    'loss/classification': class_loss.item(),
+                    'loss/domain': domain_loss.item(),
+                    'alpha': alpha,
+                    'lr': optimizer.param_groups[0]['lr']
+                })
 
-        test.tester(encoder, classifier, discriminator, source_test_loader, target_test_loader, training_mode='DANN')
+        acc = test.tester(encoder, classifier, discriminator, source_test_loader, target_test_loader, training_mode='DANN')
+        if wandb_run is not None:
+            log_payload = {
+                'epoch': epoch,
+                'eval/source_accuracy': acc['Source']['accuracy'],
+                'eval/target_accuracy': acc['Target']['accuracy'],
+            }
+            if 'Domain' in acc:
+                log_payload['eval/domain_accuracy'] = acc['Domain']['accuracy']
+            wandb_run.log(log_payload)
 
     save_model(encoder, classifier, discriminator, 'DANN')
     visualize(encoder, 'DANN')

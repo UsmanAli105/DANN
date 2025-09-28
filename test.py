@@ -68,6 +68,7 @@ def tester(encoder, classifier, discriminator, source_test_loader, target_test_l
         }
 
     print_accuracy(training_mode, accuracies)
+    return accuracies
 
 
 def process_data(data, expand_channels=False):
