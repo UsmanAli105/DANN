@@ -16,7 +16,9 @@ def main():
     source_train_loader = mnist.mnist_train_loader
     target_train_loader = mnistm.mnistm_train_loader
 
-    if not torch.cuda.is_available():
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True  # optimize conv algorithms for current input sizes
+    else:
         print("No GPUs available. (wandb integration expects CUDA for this project)")
         return
 

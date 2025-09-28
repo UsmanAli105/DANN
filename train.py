@@ -30,6 +30,7 @@ def source_only(encoder, classifier, source_train_loader, target_train_loader, w
         list(encoder.parameters()) +
         list(classifier.parameters()),
         lr=0.01, momentum=0.9)
+    scaler = torch.cuda.amp.GradScaler(enabled=getattr(params, 'use_amp', False))
 
     for epoch in range(params.epochs):
         print(f"Epoch: {epoch}")
@@ -43,19 +44,19 @@ def source_only(encoder, classifier, source_train_loader, target_train_loader, w
             p = float(batch_idx + start_steps) / total_steps
 
             source_image = torch.cat((source_image, source_image, source_image), 1)  # MNIST convert to 3 channel
-            source_image, source_label = source_image.cuda(), source_label.cuda()  # 32
+            source_image, source_label = source_image.cuda(non_blocking=True), source_label.cuda(non_blocking=True)
 
-            optimizer = utils.optimizer_scheduler(optimizer=optimizer, p=p)
-            optimizer.zero_grad()
+            utils.optimizer_scheduler(optimizer=optimizer, p=p)
+            optimizer.zero_grad(set_to_none=True)
 
-            source_feature = encoder(source_image)
+            with torch.cuda.amp.autocast(enabled=getattr(params, 'use_amp', False)):
+                source_feature = encoder(source_image)
+                class_pred = classifier(source_feature)
+                class_loss = classifier_criterion(class_pred, source_label)
 
-            # Classification loss
-            class_pred = classifier(source_feature)
-            class_loss = classifier_criterion(class_pred, source_label)
-
-            class_loss.backward()
-            optimizer.step()
+            scaler.scale(class_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             if (batch_idx + 1) % 100 == 0:
                 total_processed = batch_idx * len(source_image)
                 total_dataset = len(source_train_loader.dataset)
@@ -95,6 +96,7 @@ def dann(encoder, classifier, discriminator, source_train_loader, target_train_l
         list(discriminator.parameters()),
         lr=0.01,
         momentum=0.9)
+    scaler = torch.cuda.amp.GradScaler(enabled=getattr(params, 'use_amp', False))
 
     for epoch in range(params.epochs):
         print(f"Epoch: {epoch}")
@@ -113,31 +115,30 @@ def dann(encoder, classifier, discriminator, source_train_loader, target_train_l
 
             source_image = torch.cat((source_image, source_image, source_image), 1)
 
-            source_image, source_label = source_image.cuda(), source_label.cuda()
-            target_image, target_label = target_image.cuda(), target_label.cuda()
+            source_image, source_label = source_image.cuda(non_blocking=True), source_label.cuda(non_blocking=True)
+            target_image, target_label = target_image.cuda(non_blocking=True), target_label.cuda(non_blocking=True)
             combined_image = torch.cat((source_image, target_image), 0)
 
-            optimizer = utils.optimizer_scheduler(optimizer=optimizer, p=p)
-            optimizer.zero_grad()
+            utils.optimizer_scheduler(optimizer=optimizer, p=p)
+            optimizer.zero_grad(set_to_none=True)
 
-            combined_feature = encoder(combined_image)
-            source_feature = encoder(source_image)
+            with torch.cuda.amp.autocast(enabled=getattr(params, 'use_amp', False)):
+                combined_feature = encoder(combined_image)
+                source_feature = combined_feature[:source_image.size(0)]
 
-            # 1.Classification loss
-            class_pred = classifier(source_feature)
-            class_loss = classifier_criterion(class_pred, source_label)
+                class_pred = classifier(source_feature)
+                class_loss = classifier_criterion(class_pred, source_label)
 
-            # 2. Domain loss
-            domain_pred = discriminator(combined_feature, alpha)
+                domain_pred = discriminator(combined_feature, alpha)
+                domain_source_labels = torch.zeros(source_label.shape[0], device=source_label.device, dtype=torch.long)
+                domain_target_labels = torch.ones(target_label.shape[0], device=target_label.device, dtype=torch.long)
+                domain_combined_label = torch.cat((domain_source_labels, domain_target_labels), 0)
+                domain_loss = discriminator_criterion(domain_pred, domain_combined_label)
+                total_loss = class_loss + domain_loss
 
-            domain_source_labels = torch.zeros(source_label.shape[0]).type(torch.LongTensor)
-            domain_target_labels = torch.ones(target_label.shape[0]).type(torch.LongTensor)
-            domain_combined_label = torch.cat((domain_source_labels, domain_target_labels), 0).cuda()
-            domain_loss = discriminator_criterion(domain_pred, domain_combined_label)
-
-            total_loss = class_loss + domain_loss
-            total_loss.backward()
-            optimizer.step()
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             if (batch_idx + 1) % 100 == 0:
                 print('[{}/{} ({:.0f}%)]\tTotal Loss: {:.4f}\tClassification Loss: {:.4f}\tDomain Loss: {:.4f}'.format(
