@@ -13,13 +13,19 @@ from typing import Iterable
 
 from utils import optimizer_scheduler, set_model_mode, save_model
 
+try:
+    import wandb
+    _WANDB = True
+except ImportError:
+    _WANDB = False
+
 
 def _iterate_zip(source_loader, target_loader):
     for (s_img, s_lbl), (t_img, t_lbl) in zip(source_loader, target_loader):
         yield s_img, s_lbl, t_img, t_lbl
 
 
-def source_only(encoder, classifier, source_train_loader, target_train_loader, source_test_loader, target_test_loader, epochs=20, lr=0.01, momentum=0.9, log_interval=50, device='cuda'):
+def source_only(encoder, classifier, source_train_loader, target_train_loader, source_test_loader, target_test_loader, epochs=20, lr=0.01, momentum=0.9, log_interval=50, device='cuda', wandb_run=None):
     print("[Office-Home] Training source-only baseline")
 
     ce = nn.CrossEntropyLoss().to(device)
@@ -46,13 +52,28 @@ def source_only(encoder, classifier, source_train_loader, target_train_loader, s
 
             if (batch_idx + 1) % log_interval == 0:
                 print(f"  [{batch_idx * len(s_img)}/{len(source_train_loader.dataset)}] Loss={loss.item():.4f}")
+            if wandb_run is not None:
+                wandb_run.log({
+                    'phase': 'train',
+                    'mode': 'source_only',
+                    'epoch': epoch,
+                    'step': epoch * len(source_train_loader) + batch_idx,
+                    'loss/classification': loss.item(),
+                    'lr': optimizer.param_groups[0]['lr']
+                })
 
-        evaluate(encoder, classifier, None, source_test_loader, target_test_loader, mode='Source-only', device=device)
+        metrics = evaluate(encoder, classifier, None, source_test_loader, target_test_loader, mode='Source-only', device=device)
+        if wandb_run is not None:
+            wandb_run.log({
+                'epoch': epoch,
+                'eval/source_accuracy': metrics['source_accuracy'],
+                'eval/target_accuracy': metrics['target_accuracy']
+            })
 
     save_model(encoder, classifier, None, 'OfficeHome-Source')
 
 
-def dann(encoder, classifier, discriminator, source_train_loader, target_train_loader, source_test_loader, target_test_loader, epochs=20, lr=0.01, momentum=0.9, log_interval=50, device='cuda'):
+def dann(encoder, classifier, discriminator, source_train_loader, target_train_loader, source_test_loader, target_test_loader, epochs=20, lr=0.01, momentum=0.9, log_interval=50, device='cuda', wandb_run=None):
     print("[Office-Home] Training with DANN")
 
     ce = nn.CrossEntropyLoss().to(device)
@@ -94,8 +115,28 @@ def dann(encoder, classifier, discriminator, source_train_loader, target_train_l
 
             if (batch_idx + 1) % log_interval == 0:
                 print(f"  [{batch_idx * len(s_img)}/{len(source_train_loader.dataset)}] Total={total_loss.item():.4f} Class={class_loss.item():.4f} Domain={domain_loss.item():.4f}")
+            if wandb_run is not None:
+                wandb_run.log({
+                    'phase': 'train',
+                    'mode': 'dann',
+                    'epoch': epoch,
+                    'step': epoch * len(source_train_loader) + batch_idx,
+                    'loss/total': total_loss.item(),
+                    'loss/classification': class_loss.item(),
+                    'loss/domain': domain_loss.item(),
+                    'alpha': alpha,
+                    'lr': optimizer.param_groups[0]['lr']
+                })
 
-        evaluate(encoder, classifier, discriminator, source_test_loader, target_test_loader, mode='DANN', device=device)
+        metrics = evaluate(encoder, classifier, discriminator, source_test_loader, target_test_loader, mode='DANN', device=device)
+        if wandb_run is not None:
+            wandb_payload = {
+                'epoch': epoch,
+                'eval/source_accuracy': metrics['source_accuracy'],
+                'eval/target_accuracy': metrics['target_accuracy'],
+                'eval/domain_accuracy': metrics.get('domain_accuracy', None)
+            }
+            wandb_run.log({k: v for k, v in wandb_payload.items() if v is not None})
 
     save_model(encoder, classifier, discriminator, 'OfficeHome-DANN')
 
@@ -134,6 +175,15 @@ def evaluate(encoder, classifier, discriminator, source_loader, target_loader, m
             domain_labels = torch.cat((torch.zeros(s_img.size(0), dtype=torch.long), torch.ones(t_img.size(0), dtype=torch.long)), 0).to(device)
             d_correct += (domain_pred == domain_labels).sum().item()
 
-    print(f"[{mode}] Source Acc: {s_correct}/{s_total} ({100.*s_correct/s_total:.2f}%)  Target Acc: {t_correct}/{t_total} ({100.*t_correct/t_total:.2f}%)")
+    source_acc = 100.*s_correct/s_total
+    target_acc = 100.*t_correct/t_total
+    print(f"[{mode}] Source Acc: {s_correct}/{s_total} ({source_acc:.2f}%)  Target Acc: {t_correct}/{t_total} ({target_acc:.2f}%)")
+    result = {
+        'source_accuracy': source_acc,
+        'target_accuracy': target_acc
+    }
     if discriminator is not None:
-        print(f"[{mode}] Domain Acc: {d_correct}/{s_total + t_total} ({100.*d_correct/(s_total+t_total):.2f}%)")
+        domain_acc = 100.*d_correct/(s_total+t_total)
+        print(f"[{mode}] Domain Acc: {d_correct}/{s_total + t_total} ({domain_acc:.2f}%)")
+        result['domain_accuracy'] = domain_acc
+    return result

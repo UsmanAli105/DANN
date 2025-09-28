@@ -14,4 +14,4 @@ pin_memory = True
 prefetch_factor = 4
 persistent_workers = True
 use_amp = True  # automatic mixed precision
-grad_accum_steps = 1  # set >1 to simulate larger batch without memory increase
+grad_accum_steps = 1  # set >1 to simulate larger batch without memory increase 

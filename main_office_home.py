@@ -14,6 +14,11 @@ import torch
 import office_home
 from model_office import build_models
 import train_office
+try:
+    import wandb
+    _WANDB = True
+except ImportError:
+    _WANDB = False
 
 
 def parse_args():
@@ -29,6 +34,10 @@ def parse_args():
     p.add_argument('--lr', type=float, default=0.01)
     p.add_argument('--momentum', type=float, default=0.9)
     p.add_argument('--log-interval', type=int, default=50)
+    p.add_argument('--wandb', action='store_true', help='Enable Weights & Biases logging')
+    p.add_argument('--wandb-project', default='DANN-OfficeHome', help='W&B project name')
+    p.add_argument('--wandb-run-name', default=None, help='Optional custom run name')
+    p.add_argument('--wandb-group', default=None, help='Optional W&B run group')
     return p.parse_args()
 
 
@@ -52,13 +61,32 @@ def main():
     classifier.to(device)
     discriminator.to(device)
 
+    run = None
+    if args.wandb and _WANDB:
+        run = wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            group=args.wandb_group,
+            config={
+                'source_domain': args.source,
+                'target_domain': args.target,
+                'batch_size': args.batch_size,
+                'epochs': args.epochs,
+                'lr': args.lr,
+                'momentum': args.momentum,
+                'method': args.method,
+                'pretrained': not args.no_pretrained
+            }
+        )
+
     if args.method == 'source':
         train_office.source_only(
             encoder, classifier,
             src_train, tgt_train,
             src_test, tgt_test,
             epochs=args.epochs, lr=args.lr, momentum=args.momentum,
-            log_interval=args.log_interval, device=device
+            log_interval=args.log_interval, device=device,
+            wandb_run=run
         )
     else:
         train_office.dann(
@@ -66,8 +94,12 @@ def main():
             src_train, tgt_train,
             src_test, tgt_test,
             epochs=args.epochs, lr=args.lr, momentum=args.momentum,
-            log_interval=args.log_interval, device=device
+            log_interval=args.log_interval, device=device,
+            wandb_run=run
         )
+
+    if run is not None:
+        run.finish()
 
 
 if __name__ == '__main__':
